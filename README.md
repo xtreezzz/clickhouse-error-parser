@@ -50,7 +50,8 @@ This project extracts error information from the ClickHouse source code by parsi
 ## Prerequisites
 
 - Python 3.6 or higher
-- ClickHouse source code available locally
+- Clickhouse source code available locally
+  - Clone the Clickhouse repository from [ClickHouse/ClickHouse](https://github.com/ClickHouse/ClickHouse)
 
 ## Installation
 

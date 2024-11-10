@@ -10,21 +10,28 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 # Manual mapping for missing ErrorCodes
 manual_error_code_map = {
-    'ERROR_CODE_FOR_UNEXPECTED_NAME': 100,
-    'storage_already_exists_error_code': 101,
-    'too_many_rows_exception_code': 102,
-    'too_many_bytes_exception_code': 103,
-    'NO_ELEMENTS_IN_CONFIG': 106,
-    'SOME_CODE': 107,
-    'TOO_MANY_ROWS': 108,
+    'storage_already_exists_error_code': 2000,
+    'error_code': 2001,  # General placeholder for variable error codes
+    'ERROR_CODE_FOR_UNEXPECTED_NAME': 2002,
+    'ZBADARGUMENTS': 2003,
+    'ZMARSHALLINGERROR': 2004,
+    'ZCONNECTIONLOSS': 2005,
+    'ZOPERATIONTIMEOUT': 2006,
+    'ZRUNTIMEINCONSISTENCY': 2007,
+    'ZUNIMPLEMENTED': 2008,
+    'decompression_error_code': 2009,
+    'too_many_rows_exception_code': 2010,
+    'too_many_bytes_exception_code': 2011,
+    'exception_code': 2012,  # General placeholder
+    # Add any other missing codes here
 }
 
 # Regular expression to find throw Exception(...) statements
 exception_pattern = re.compile(
-    r"""throw\s+Exception\s*\(\s*               
-    (?P<error_code>[\w:]+)\s*,\s*              
-    "(?P<template>(?:[^"\\]|\\.)+)"\s*,?       
-    (?:[^)]*)\)                                 
+    r"""throw\s+Exception\s*\(\s*                # throw Exception(
+    (?P<error_code>[\w:]+)\s*,\s*               # ErrorCodes::SOME_CODE,
+    "(?P<template>(?:[^"\\]|\\.)+)"\s*,?        # "Message template", accounting for escaped quotes
+    (?:[^)]*)\)                                 # Remaining parameters until )
     """,
     re.VERBOSE | re.DOTALL
 )
@@ -35,12 +42,13 @@ error_code_pattern = re.compile(
     re.VERBOSE
 )
 
-# Additional regular expression for alternative ErrorCodes definitions
+# Additional regular expression for alternative ErrorCodes definitions (if necessary)
 alternative_error_code_pattern = re.compile(
     r"""const\s+int\s+(?P<code>[A-Z0-9_]+)\s*=\s*(?P<num>\d+)\s*;""",
     re.VERBOSE
 )
 
+# Dictionary to map ErrorCodes to their numeric values
 error_code_map = {}
 
 def parse_error_codes(file_full_path):
@@ -49,25 +57,31 @@ def parse_error_codes(file_full_path):
     """
     try:
         with open(file_full_path, 'r', encoding='utf-8') as file:
-            for line in file:
-                match = error_code_pattern.search(line)
-                if match:
-                    num = int(match.group('num'))
-                    code = match.group('code').strip()
-                    if code in error_code_map:
-                        logging.warning(f"Duplicate error code '{code}' found with number {num}. Previous number: {error_code_map[code]}.")
-                    error_code_map[code] = num
-                else:
-                    match_alt = alternative_error_code_pattern.search(line)
-                    if match_alt:
-                        num = int(match_alt.group('num'))
-                        code = match_alt.group('code').strip()
-                        if code in error_code_map:
-                            logging.warning(f"Duplicate error code '{code}' found with number {num}. Previous number: {error_code_map[code]}.")
-                        error_code_map[code] = num
+            content = file.read()
+            # Remove comments
+            content = re.sub(r'//.*', '', content)
+            content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
+
+            # Find all M(...) macros
+            for match in error_code_pattern.finditer(content):
+                num = int(match.group('num'))
+                code = match.group('code').strip()
+                if code in error_code_map:
+                    logging.warning(f"Duplicate error code '{code}' found with number {num}. Previous number: {error_code_map[code]}.")
+                error_code_map[code] = num
+
+            # Attempt to find alternative definitions
+            for match_alt in alternative_error_code_pattern.finditer(content):
+                num = int(match_alt.group('num'))
+                code = match_alt.group('code').strip()
+                if code in error_code_map:
+                    logging.warning(f"Duplicate error code '{code}' found with number {num}. Previous number: {error_code_map[code]}.")
+                error_code_map[code] = num
+
     except (UnicodeDecodeError, FileNotFoundError) as e:
         logging.error(f"Failed to read file {file_full_path}: {e}")
 
+# Lists to store extracted data
 orig_texts = []
 error_codes = []
 templates = []
@@ -119,23 +133,27 @@ def split_arguments(args_str):
 
 def parse_exceptions_in_file(file_full_path, relative_path):
     """
-    Parses a single file to extract exceptions with line numbers.
+    Parses a single file to extract exceptions, including line numbers.
     """
     try:
         with open(file_full_path, 'r', encoding='utf-8') as file:
             content = file.read()
+
             for match in exception_pattern.finditer(content):
                 orig_text = match.group(0).replace('\n', ' ').strip()
                 error_code_full = match.group('error_code').strip()
 
+                # Extract error code name without the ErrorCodes:: prefix
                 if "::" in error_code_full:
                     error_code = error_code_full.split("::")[-1]
                 else:
-                    error_code = error_code_full
+                    error_code = error_code_full  # If no prefix
 
                 template = match.group('template').strip()
 
                 # Parse arguments to extract error message variables
+                # Assume that variables start from the third argument
+                # Extract all arguments after the template
                 template_start = orig_text.find('"')
                 template_end = orig_text.find('"', template_start + 1)
                 if template_start != -1 and template_end != -1:
@@ -149,19 +167,26 @@ def parse_exceptions_in_file(file_full_path, relative_path):
 
                 # Get numeric error code from the combined mapping
                 exception_num = combined_error_code_map.get(error_code, None)
+
+                # Check if error_code is a variable (not all uppercase)
                 if exception_num is None:
-                    logging.warning(f"Error code '{error_code}' not found in ErrorCodes.cpp and manual mapping.")
-                    exception_num = 0
+                    if error_code.isupper():
+                        logging.warning(f"Error code '{error_code}' not found in ErrorCodes.cpp and manual mapping.")
+                        exception_num = 0  # Assign a default value
+                    else:
+                        # Error code is likely a variable; assign a default number
+                        exception_num = 9999  # Or any other default value
+                        logging.info(f"Variable error code '{error_code}' assigned default error code {exception_num}.")
 
-                # Find the line number for the exception in the file
-                line_num = content[:match.start()].count('\n') + 1
+                # Compute line number
+                line_number = content.count('\n', 0, match.start()) + 1
 
-                # Append extracted data with line number to the lists
+                # Append extracted data to the respective lists
                 orig_texts.append(orig_text)
                 error_codes.append(error_code)
                 templates.append(template)
                 exception_nums.append(exception_num)
-                file_paths.append(f"{str(relative_path).replace('\\', '/')}: {line_num}")
+                file_paths.append(f"{str(relative_path).replace('\\', '/')}:{line_number}")
                 error_message_variables.append(error_vars)
     except (UnicodeDecodeError, FileNotFoundError) as e:
         logging.error(f"Failed to read file {file_full_path}: {e}")
@@ -176,31 +201,38 @@ def main():
     source_directory = Path(args.source_directory)
     output_file = Path(args.output_file)
 
+    # Check if the source directory exists
     if not source_directory.exists():
         logging.error(f"Directory '{source_directory}' does not exist.")
         return
 
+    # Update base_file_path based on the source_directory argument
     global base_file_path, error_codes_file_path
     base_file_path = source_directory
     error_codes_file_path = base_file_path / "src" / "Common" / "ErrorCodes.cpp"
 
+    # Parse ErrorCodes.cpp
     if error_codes_file_path.exists():
         parse_error_codes(error_codes_file_path)
         logging.info(f"Parsing '{error_codes_file_path}' completed.")
     else:
         logging.error(f"File '{error_codes_file_path}' does not exist.")
 
+    # Combine automatic and manual ErrorCodes mappings
     global combined_error_code_map
     combined_error_code_map = {**error_code_map, **manual_error_code_map}
 
+    # Log a sample of the ErrorCodes mapping
     logging.info("Sample ErrorCodes mapping:")
     for i, (code, num) in enumerate(combined_error_code_map.items()):
         logging.info(f"{code}: {num}")
-        if i >= 29:
+        if i >= 29:  # Display the first 30 entries for verification
             break
 
+    # Walk through all files in the directory and parse exceptions
     total_files = 0
     for root, dirs, files in os.walk(base_file_path):
+        # Exclude 'tests' directories (case-insensitive)
         dirs[:] = [d for d in dirs if d.lower() != 'tests']
         for file in files:
             if file.endswith(('.cpp', '.hpp', '.h', '.cxx', '.cc')):
@@ -208,24 +240,28 @@ def main():
                 try:
                     relative_path = full_path.relative_to(base_file_path)
                 except ValueError:
+                    # If the file is not within base_file_path, skip it
                     logging.warning(f"File '{full_path}' is not within '{base_file_path}'. Skipping.")
                     continue
                 parse_exceptions_in_file(full_path, relative_path)
                 total_files += 1
 
+    # Calculate total exceptions found
     total_exceptions = len(orig_texts)
 
+    # Log the results
     logging.info(f"Total files processed: {total_files}")
     logging.info(f"Total exceptions found: {total_exceptions}")
 
     if total_exceptions > 0:
+        # Create a list of dictionaries for JSON output
         errors = []
         for i in range(total_exceptions):
             error_entry = {
                 'file_path': file_paths[i],
                 'error_code': exception_nums[i],
                 'error_code_name': error_codes[i],
-                'error_class_name': 'Exception',
+                'error_class_name': 'Exception',  # Since the regex only matches Exception
                 'error_message_template': templates[i],
                 'error_message_variables': error_message_variables[i],
                 'severity_level': 'ERROR',
@@ -233,6 +269,7 @@ def main():
             }
             errors.append(error_entry)
 
+        # Save the results to a JSON file
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump({"errors": errors}, f, indent=4, ensure_ascii=False)
         logging.info(f"JSON successfully saved to '{output_file}'.")
@@ -240,6 +277,7 @@ def main():
     else:
         logging.info("No exceptions found.")
 
+    # Optionally, print the first few records for verification
     if total_exceptions > 0:
         logging.info("\nSample records:")
         for error in errors[:5]:
